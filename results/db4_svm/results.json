@@ -1,0 +1,55 @@
+{
+  "data": {
+    "n_train": 9200,
+    "n_test": 2300
+  },
+  "features": {
+    "n_features": 15,
+    "feature_names": [
+      "A5_energy",
+      "A5_entropy",
+      "A5_std",
+      "D5_energy",
+      "D5_entropy",
+      "D5_std",
+      "D4_energy",
+      "D4_entropy",
+      "D4_std",
+      "D3_energy",
+      "D3_entropy",
+      "D3_std",
+      "D2_energy",
+      "D2_entropy",
+      "D2_std",
+      "D1_energy",
+      "D1_entropy",
+      "D1_std"
+    ]
+  },
+  "classification": {
+    "train_metrics": {
+      "accuracy": 0.9617391304347827,
+      "precision": 0.9325581395348838,
+      "recall": 0.8717391304347826,
+      "f1": 0.9011235955056179,
+      "roc_auc": 0.9856847013823252
+    },
+    "test_metrics": {
+      "accuracy": 0.9608695652173913,
+      "precision": 0.9342723004694836,
+      "recall": 0.8652173913043478,
+      "f1": 0.8984198645598194,
+      "roc_auc": 0.983147448015123
+    },
+    "confusion_matrix": [
+      [
+        1812,
+        28
+      ],
+      [
+        62,
+        398
+      ]
+    ]
+  }
+}
