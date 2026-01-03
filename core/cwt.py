@@ -43,7 +43,10 @@ def cwt(signal: np.ndarray, scales: np.ndarray, wavelet: str = 'morlet',
             wavelet_length += 1
         
         half_len = wavelet_length // 2
-        t = np.arange(-half_len, half_len + 1) / (scale * sampling_rate)
+        # IMPORTANT: Use a dimensionless time variable for the mother wavelet.
+        # In the CWT, the scaled wavelet is ψ((n)/scale). The sampling_rate is
+        # only needed when converting scales↔frequencies and for plotting axes.
+        t = np.arange(-half_len, half_len + 1) / scale
         
         # Generate scaled wavelet
         if wavelet.lower() == 'morlet':
@@ -77,7 +80,9 @@ def scales_to_frequencies(scales: np.ndarray, wavelet: str = 'morlet',
         Array of frequencies corresponding to each scale
     """
     if wavelet.lower() == 'morlet':
-        # For Morlet: f = omega0 / (2 * pi * scale)
+        # For Morlet: f = (omega0 / (2π)) * (sampling_rate / scale)
+        # omega0 is the (dimensionless) central angular frequency of the Morlet
+        # mother wavelet defined over the dimensionless time variable.
         frequencies = omega0 * sampling_rate / (2 * np.pi * scales)
     else:
         frequencies = sampling_rate / scales

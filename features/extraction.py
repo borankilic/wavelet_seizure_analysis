@@ -279,26 +279,51 @@ def extract_features_batch(signals: np.ndarray,
     return np.array(features_list)
 
 
-def get_feature_names(level: int = 5, feature_set: str = 'standard') -> List[str]:
+def get_feature_names(coefficients: List[np.ndarray] = None,
+                     level: int = None,
+                     feature_set: str = 'standard') -> List[str]:
     """
     Get names for extracted features.
     
+    Automatically determines the level from coefficients if provided.
+    If coefficients are not provided, uses the level parameter.
+    
     Args:
-        level: Decomposition level
-        feature_set: Feature set type
+        coefficients: List of DWT coefficients (first is approximation, rest are details)
+                     If provided, level will be inferred from this.
+        level: Decomposition level (used only if coefficients not provided)
+        feature_set: Feature set type ('standard', 'full', or 'minimal')
     
     Returns:
         List of feature names
+    
+    Examples:
+        >>> coeffs = dwt(signal, 'db4', level=5)
+        >>> names = get_feature_names(coefficients=coeffs, feature_set='standard')
+        >>> # Or with explicit level (backward compatibility):
+        >>> names = get_feature_names(level=5, feature_set='standard')
     """
+    # Infer level from coefficients if provided
+    if coefficients is not None:
+        # Number of coefficients = level + 1 (1 approximation + level details)
+        # So level = len(coefficients) - 1
+        level = len(coefficients) - 1
+    elif level is None:
+        # Default to 5 if neither provided
+        level = 5
+    
+    # Generate band names: A_level, D_level, D_level-1, ..., D1
     band_names = ['A' + str(level)] + ['D' + str(level - i) for i in range(level)]
     
+    # Determine stat names based on feature_set
     if feature_set == 'standard':
         stat_names = ['energy', 'entropy', 'std']
     elif feature_set == 'full':
         stat_names = ['energy', 'entropy', 'std', 'mean', 'skew', 'kurt', 'rms']
-    else:
+    else:  # 'minimal'
         stat_names = ['energy', 'entropy']
     
+    # Generate feature names: band_stat
     names = []
     for band in band_names:
         for stat in stat_names:

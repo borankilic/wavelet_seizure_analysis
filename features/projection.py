@@ -320,7 +320,7 @@ def analyze_pca_components(features: np.ndarray,
     """
     if n_components is None:
         n_components = min(features.shape)
-    
+    print(f"n_components: {n_components}")
     # Fit PCA
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(features)

@@ -89,6 +89,20 @@ def denoise_signal(signal: np.ndarray, wavelet: str = 'db4',
     if threshold_mode == 'universal':
         # Universal threshold (VisuShrink)
         threshold = sigma * np.sqrt(2 * np.log(n))
+    elif threshold_mode == 'sure':
+        # SURE threshold (SureShrink)
+        # See Donoho & Johnstone 1995
+        detail = coeffs[-1]
+        sorted_abs = np.sort(np.abs(detail))**2
+        risks = []
+        for i, t2 in enumerate(sorted_abs):
+            t = np.sqrt(t2)
+            mask = (np.abs(detail) <= t)
+            num = mask.sum()
+            risk = n - 2*num + t2*num + np.sum(sorted_abs[~mask])
+            risks.append(risk)
+        min_idx = int(np.argmin(risks))
+        threshold = np.sqrt(sorted_abs[min_idx]) if len(sorted_abs) > 0 else sigma * np.sqrt(2 * np.log(n))
     else:
         # Default to universal
         threshold = sigma * np.sqrt(2 * np.log(n))

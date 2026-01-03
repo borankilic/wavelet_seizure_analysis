@@ -28,7 +28,7 @@ from data_io.data_loader import (
 from core import dwt, cwt, denoise_signal, scales_to_frequencies
 from features.extraction import extract_features_batch, get_feature_names
 from features.projection import reduce_dimensions
-from models.classifiers import train_and_evaluate
+from models.classifiers import train_and_evaluate, cross_validate_classifier
 from viz import (
     plot_signals, plot_signal_comparison, plot_scalogram,
     plot_dwt_coefficients, plot_brain_wave_bands,
@@ -49,13 +49,13 @@ DWT_LEVEL = 5             # 5 levels for EEG bands
 DENOISE_THRESHOLD = 'soft'
 
 # Feature extraction
-FEATURE_SET = 'standard'  # 'standard', 'full', or 'minimal'
+FEATURE_SET = 'full'  # 'standard', 'full', or 'minimal'
 
 # Visualization (dimensionality reduction)
-PROJECTION_METHOD = 'tsne' # 'pca', 'umap', 'tsne'
+PROJECTION_METHOD = 'pca' # 'pca', 'umap', 'tsne'
 
 # Classification
-CLASSIFIER = 'svm'        # 'svm' or 'xgboost'
+CLASSIFIER = 'svm'            # 'svm', 'xgboost', 'random_forest', or 'naive_bayes'
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
@@ -67,9 +67,12 @@ RANDOM_STATE = 42
 def run_pipeline(data_path: Path = DATA_PATH,
                  wavelet: str = None,
                  classifier: str = None,
+                 projection_method: str = 'pca',
                  visualize: bool = True,
                  save_figures: bool = False,
-                 verbose: bool = True) -> dict:
+                 verbose: bool = True,
+                 cross_validate: bool = True,
+                 cv_folds: int = 5) -> dict:
     """
     Run the complete EEG classification pipeline.
     
@@ -78,6 +81,7 @@ def run_pipeline(data_path: Path = DATA_PATH,
     2. Denoise (DWT soft thresholding)
     3. Extract Features (DWT sub-bands)
     4. Train/Evaluate Classifier (using FULL features - no dimensionality reduction)
+    4b. Cross-Validation (5-fold, optional)
     5. Visualize (with PCA/UMAP for visualization only)
     
     Args:
@@ -87,6 +91,8 @@ def run_pipeline(data_path: Path = DATA_PATH,
         visualize: Generate visualizations
         save_figures: Save figures to disk
         verbose: Print progress
+        cross_validate: Perform k-fold cross-validation (default: True)
+        cv_folds: Number of cross-validation folds (default: 5)
     
     Returns:
         Dictionary with all results
@@ -165,18 +171,22 @@ def run_pipeline(data_path: Path = DATA_PATH,
         plt.close(fig)
         
         # CWT scalogram
-        scales = np.arange(1, 64)
+        scales = np.geomspace(1, 64, num=128)
         cwt_coeffs = cwt(X_train[seizure_idx], scales, wavelet='morlet', sampling_rate=SAMPLING_RATE)
         frequencies = scales_to_frequencies(scales, 'morlet', SAMPLING_RATE)
-        fig = plot_scalogram(
-            cwt_coeffs, scales=scales, frequencies=frequencies,
-            sampling_rate=SAMPLING_RATE,
-            title="CWT Scalogram (Morlet Wavelet)",
-            show_frequencies=True
-        )
-        if save_path:
-            fig.savefig(f"{save_path}/cwt_scalogram.png", dpi=150)
-        plt.close(fig)
+        # Construct time axis from signal length and sampling rate
+        time = np.arange(cwt_coeffs.shape[1]) / SAMPLING_RATE
+        #ax = plot_scalogram(
+        #    cwt_coeffs, scales=scales, time=time, frequencies=frequencies,
+        #    yaxis='frequency',
+        #    yscale='log',
+        #    cscale='log',
+        #    title="CWT Scalogram (Morlet Wavelet)"
+        #)
+        #fig = ax.figure
+        #if save_path:
+        #    fig.savefig(f"{save_path}/cwt_scalogram.png", dpi=150)
+        #plt.close(fig)
     
     # =========================================================================
     # STEP 2: Denoise
@@ -236,7 +246,10 @@ def run_pipeline(data_path: Path = DATA_PATH,
         feature_set=FEATURE_SET, verbose=False
     )
     
-    feature_names = get_feature_names(DWT_LEVEL, FEATURE_SET)
+    # Get feature names by extracting coefficients from a sample to determine actual level
+    # This ensures we get the correct level even if the requested level was adjusted
+    sample_coeffs = dwt(X_train_denoised[0], wavelet, DWT_LEVEL)
+    feature_names = get_feature_names(coefficients=sample_coeffs, feature_set=FEATURE_SET)
     
     results['features'] = {
         'n_features': features_train.shape[1],
@@ -262,6 +275,33 @@ def run_pipeline(data_path: Path = DATA_PATH,
         model_type=classifier, verbose=verbose
     )
     results['classification'] = clf_results
+    
+    # =========================================================================
+    # STEP 4b: Cross-Validation (Verification)
+    # =========================================================================
+    if cross_validate:
+        if verbose:
+            print("\n" + "="*70)
+            print(f"STEP 4b: {cv_folds}-FOLD CROSS-VALIDATION (VERIFICATION)")
+            print("="*70)
+            print(f"  Performing cross-validation on full training set")
+            print(f"  This provides a more robust estimate of model performance")
+        
+        # Combine train and test for cross-validation
+        X_full = np.vstack([features_train, features_test])
+        y_full = np.hstack([y_train, y_test])
+        
+        cv_results = cross_validate_classifier(
+            X_full, y_full,
+            model_type=classifier,
+            cv_folds=cv_folds,
+            verbose=verbose
+        )
+        results['cross_validation'] = cv_results
+        
+        if verbose:
+            print(f"\n  Cross-validation completed successfully!")
+            print(f"  Mean CV Accuracy: {cv_results['mean_metrics']['accuracy']:.4f} ± {cv_results['std_metrics']['accuracy']:.4f}")
     
     if visualize:
         fig = plot_confusion_matrix(
@@ -345,7 +385,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--classifier", type=str, default=CLASSIFIER,
-        choices=['svm', 'xgboost'],
+        choices=['svm', 'xgboost', 'random_forest', 'naive_bayes'],
         help="Classifier to use"
     )
     
@@ -360,6 +400,9 @@ if __name__ == "__main__":
     results = run_pipeline(
         data_path=DATA_PATH,
         visualize=not args.no_viz,
+        projection_method= PROJECTION_METHOD,
+        cross_validate=True,
+        cv_folds=5,
         save_figures=args.save_figs,
         verbose=True
     )

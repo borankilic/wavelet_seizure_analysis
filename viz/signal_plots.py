@@ -68,14 +68,14 @@ def plot_signals(signals: Union[np.ndarray, List[np.ndarray]],
         
         for i, (signal, label, color) in enumerate(zip(signals, labels, colors)):
             t = np.arange(len(signal)) / sampling_rate
-            axes[i].plot(t, signal, color=color, alpha=alpha, linewidth=0.8)
-            axes[i].set_ylabel(label, fontsize=10)
+            axes[i].plot(t, signal, color=color, alpha=alpha, linewidth=2)
+            axes[i].set_ylabel(label, fontsize=18)
             if grid:
                 axes[i].grid(True, alpha=0.3)
             axes[i].set_xlim(t[0], t[-1])
         
-        axes[-1].set_xlabel(xlabel, fontsize=11)
-        fig.suptitle(title, fontsize=13, fontweight='bold')
+        axes[-1].set_xlabel(xlabel, fontsize=18)
+        fig.suptitle(title, fontsize=24, fontweight='bold')
         plt.tight_layout()
     else:
         # Overlay on same axes
@@ -83,15 +83,15 @@ def plot_signals(signals: Union[np.ndarray, List[np.ndarray]],
         
         for signal, label, color in zip(signals, labels, colors):
             t = np.arange(len(signal)) / sampling_rate
-            ax.plot(t, signal, color=color, alpha=alpha, label=label, linewidth=0.8)
+            ax.plot(t, signal, color=color, alpha=alpha, label=label, linewidth=2)
         
-        ax.set_xlabel(xlabel, fontsize=11)
-        ax.set_ylabel(ylabel, fontsize=11)
-        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel(xlabel, fontsize=18)
+        ax.set_ylabel(ylabel, fontsize=18)
+        ax.set_title(title, fontsize=24, fontweight='bold')
         if grid:
             ax.grid(True, alpha=0.3)
         if n_signals > 1:
-            ax.legend(loc='upper right', fontsize=9)
+            ax.legend(loc='upper right', fontsize=20)
         ax.set_xlim(t[0], t[-1])
         plt.tight_layout()
     

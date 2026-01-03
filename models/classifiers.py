@@ -1,29 +1,37 @@
 """
 Models Module: Classification Models
 ======================================
-SVM and XGBoost classifiers with training and evaluation wrappers.
+SVM, XGBoost, Random Forest, and Naive Bayes classifiers with training and evaluation wrappers.
 """
 
 import numpy as np
 from typing import Dict, Tuple, Optional, Literal, List
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     confusion_matrix, classification_report, roc_auc_score, roc_curve
 )
-from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.model_selection import cross_val_score, GridSearchCV, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
 # Try importing XGBoost (optional)
+XGBOOST_AVAILABLE = False
+XGBOOST_ERROR_MSG = None
+
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
-except (ImportError, Exception) as e:
+except Exception as e:
     XGBOOST_AVAILABLE = False
+    XGBOOST_ERROR_MSG = str(e)
     # Check if it's an OpenMP/library loading issue
-    if 'libomp' in str(e).lower() or 'openmp' in str(e).lower() or 'xgb' in str(e).lower():
+    error_str = str(e).lower()
+    if 'libomp' in error_str or 'openmp' in error_str or 'xgb' in error_str or 'libxgboost' in error_str:
         print("Warning: XGBoost installed but cannot load (OpenMP runtime missing).")
         print("  macOS users: Run 'brew install libomp' to install OpenMP runtime.")
+        print(f"  Error details: {str(e)[:200]}")
     else:
         print("Warning: XGBoost not available. Install with: pip install xgboost")
 
@@ -36,11 +44,11 @@ class EEGClassifier:
     """
     Unified classifier wrapper for EEG seizure detection.
     
-    Supports SVM and XGBoost with consistent API.
+    Supports SVM, XGBoost, Random Forest, and Naive Bayes with consistent API.
     """
     
     def __init__(self,
-                 model_type: Literal['svm', 'xgboost'] = 'svm',
+                 model_type: Literal['svm', 'xgboost', 'random_forest', 'naive_bayes'] = 'svm',
                  scale_features: bool = True,
                  random_state: int = 42,
                  **kwargs):
@@ -48,7 +56,7 @@ class EEGClassifier:
         Initialize classifier.
         
         Args:
-            model_type: Type of classifier ('svm' or 'xgboost')
+            model_type: Type of classifier ('svm', 'xgboost', 'random_forest', or 'naive_bayes')
             scale_features: Whether to standardize features
             random_state: Random seed
             **kwargs: Additional model parameters
@@ -83,7 +91,17 @@ class EEGClassifier:
             
         elif self.model_type == 'xgboost':
             if not XGBOOST_AVAILABLE:
-                raise ImportError("XGBoost not available. Install with: pip install xgboost")
+                if XGBOOST_ERROR_MSG and ('libomp' in XGBOOST_ERROR_MSG.lower() or 'openmp' in XGBOOST_ERROR_MSG.lower()):
+                    raise ImportError(
+                        f"XGBoost cannot load due to missing OpenMP runtime.\n"
+                        f"Error: {XGBOOST_ERROR_MSG[:300]}\n"
+                        f"Solution: macOS users should run 'brew install libomp'"
+                    )
+                else:
+                    raise ImportError(
+                        f"XGBoost not available. Install with: pip install xgboost\n"
+                        f"Error: {XGBOOST_ERROR_MSG if XGBOOST_ERROR_MSG else 'Import failed'}"
+                    )
             
             # Default XGBoost parameters
             n_estimators = self.kwargs.pop('n_estimators', 100)
@@ -99,9 +117,36 @@ class EEGClassifier:
                 eval_metric='logloss',
                 **self.kwargs
             )
+        
+        elif self.model_type == 'random_forest':
+            # Default Random Forest parameters
+            n_estimators = self.kwargs.pop('n_estimators', 100)
+            max_depth = self.kwargs.pop('max_depth', None)
+            min_samples_split = self.kwargs.pop('min_samples_split', 2)
+            min_samples_leaf = self.kwargs.pop('min_samples_leaf', 1)
+            
+            self.model = RandomForestClassifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                min_samples_leaf=min_samples_leaf,
+                random_state=self.random_state,
+                n_jobs=-1,
+                **self.kwargs
+            )
+        
+        elif self.model_type == 'naive_bayes':
+            # Gaussian Naive Bayes (suitable for continuous features)
+            var_smoothing = self.kwargs.pop('var_smoothing', 1e-9)
+            
+            self.model = GaussianNB(
+                var_smoothing=var_smoothing,
+                **self.kwargs
+            )
+        
         else:
             raise ValueError(f"Unknown model type: {self.model_type}. "
-                           f"Choose from: svm, xgboost")
+                           f"Choose from: svm, xgboost, random_forest, naive_bayes")
     
     def fit(self, X: np.ndarray, y: np.ndarray) -> 'EEGClassifier':
         """
@@ -288,6 +333,103 @@ def train_and_evaluate(X_train: np.ndarray,
     return classifier, results
 
 
+def cross_validate_classifier(X: np.ndarray,
+                              y: np.ndarray,
+                              model_type: str = 'svm',
+                              cv_folds: int = 5,
+                              verbose: bool = True,
+                              **kwargs) -> Dict:
+    """
+    Perform k-fold cross-validation with comprehensive metrics.
+    
+    This function performs stratified k-fold cross-validation and computes
+    all evaluation metrics (accuracy, precision, recall, F1, ROC-AUC) for
+    each fold, then returns mean and standard deviation across folds.
+    
+    Args:
+        X: Feature matrix (full dataset)
+        y: Labels (full dataset)
+        model_type: Type of classifier ('svm' or 'xgboost')
+        cv_folds: Number of cross-validation folds (default: 5)
+        verbose: Print detailed results
+        **kwargs: Additional model parameters
+    
+    Returns:
+        Dictionary containing:
+            - fold_scores: List of metric dictionaries for each fold
+            - mean_metrics: Mean of each metric across folds
+            - std_metrics: Standard deviation of each metric across folds
+            - all_metrics: Combined dictionary with all results
+    """
+    # Initialize stratified k-fold
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    
+    # Store metrics for each fold
+    fold_scores = []
+    
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"Performing {cv_folds}-Fold Cross-Validation")
+        print(f"Model: {model_type.upper()}")
+        print(f"{'='*70}")
+    
+    # Perform cross-validation
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y), 1):
+        # Split data
+        X_train_fold = X[train_idx]
+        y_train_fold = y[train_idx]
+        X_val_fold = X[val_idx]
+        y_val_fold = y[val_idx]
+        
+        # Train classifier
+        classifier = EEGClassifier(model_type=model_type, **kwargs)
+        classifier.fit(X_train_fold, y_train_fold)
+        
+        # Evaluate on validation fold
+        fold_metrics = classifier.evaluate(X_val_fold, y_val_fold)
+        fold_scores.append(fold_metrics)
+        
+        if verbose:
+            print(f"\nFold {fold_idx}/{cv_folds}:")
+            print(f"  Accuracy: {fold_metrics['accuracy']:.4f}")
+            print(f"  Precision: {fold_metrics['precision']:.4f}")
+            print(f"  Recall: {fold_metrics['recall']:.4f}")
+            print(f"  F1 Score: {fold_metrics['f1']:.4f}")
+            print(f"  ROC-AUC: {fold_metrics['roc_auc']:.4f}")
+    
+    # Compute mean and std across folds
+    metrics_list = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+    mean_metrics = {}
+    std_metrics = {}
+    
+    for metric in metrics_list:
+        values = [fold[metric] for fold in fold_scores]
+        mean_metrics[metric] = np.mean(values)
+        std_metrics[metric] = np.std(values)
+    
+    if verbose:
+        print(f"\n{'='*70}")
+        print("Cross-Validation Summary (Mean ± Std)")
+        print(f"{'='*70}")
+        print(f"Accuracy:  {mean_metrics['accuracy']:.4f} ± {std_metrics['accuracy']:.4f}")
+        print(f"Precision: {mean_metrics['precision']:.4f} ± {std_metrics['precision']:.4f}")
+        print(f"Recall:    {mean_metrics['recall']:.4f} ± {std_metrics['recall']:.4f}")
+        print(f"F1 Score:  {mean_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
+        print(f"ROC-AUC:   {mean_metrics['roc_auc']:.4f} ± {std_metrics['roc_auc']:.4f}")
+        print(f"{'='*70}\n")
+    
+    return {
+        'fold_scores': fold_scores,
+        'mean_metrics': mean_metrics,
+        'std_metrics': std_metrics,
+        'all_metrics': {
+            'mean': mean_metrics,
+            'std': std_metrics,
+            'folds': fold_scores
+        }
+    }
+
+
 def hyperparameter_search(X: np.ndarray,
                           y: np.ndarray,
                           model_type: str = 'svm',
@@ -326,8 +468,22 @@ def hyperparameter_search(X: np.ndarray,
             'max_depth': [3, 6, 9],
             'learning_rate': [0.01, 0.1, 0.2]
         }
+    elif model_type == 'random_forest':
+        model = RandomForestClassifier(random_state=42, n_jobs=-1)
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [None, 10, 20, 30],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4]
+        }
+    elif model_type == 'naive_bayes':
+        model = GaussianNB()
+        param_grid = {
+            'var_smoothing': [1e-11, 1e-10, 1e-9, 1e-8, 1e-7]
+        }
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. "
+                        f"Choose from: svm, xgboost, random_forest, naive_bayes")
     
     if verbose:
         print(f"\nPerforming grid search for {model_type.upper()}...")

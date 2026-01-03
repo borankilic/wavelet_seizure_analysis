@@ -15,16 +15,18 @@ def plot_scalogram(coefficients: np.ndarray,
                    frequencies: np.ndarray = None,
                    sampling_rate: float = 1.0,
                    title: str = "CWT Scalogram",
-                   cmap: str = 'viridis',
+                   cmap: str = 'jet',
                    log_scale: bool = False,
+                   interpolate: bool = False,
                    colorbar: bool = True,
                    figsize: Tuple[int, int] = (12, 6),
-                   show_frequencies: bool = True) -> plt.Figure:
+                   show_frequencies: bool = True,
+                   ylim: Tuple[float, float] = None,
+                   yscale: str = None) -> plt.Figure:
     """
     Plot CWT scalogram (time-frequency representation).
     
-    Visualizes the magnitude of CWT coefficients to show time-frequency 
-    "hotspots" where signal energy is concentrated.
+    Simplified implementation following scaleogram library principles.
     
     Args:
         coefficients: CWT coefficients (n_scales x n_samples)
@@ -32,51 +34,89 @@ def plot_scalogram(coefficients: np.ndarray,
         frequencies: Corresponding frequencies (if None, uses scales)
         sampling_rate: Sampling rate
         title: Plot title
-        cmap: Colormap
+        cmap: Colormap (default 'jet' like scaleogram)
         log_scale: Use logarithmic color scale
+        interpolate: Not used (kept for compatibility)
         colorbar: Show colorbar
         figsize: Figure size
         show_frequencies: Show frequency axis instead of scales
+        ylim: Y-axis limits (min, max)
+        yscale: Y-axis scale ('linear' or 'log')
     
     Returns:
         matplotlib Figure
     """
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Take magnitude if complex
-    if np.iscomplexobj(coefficients):
-        power = np.abs(coefficients) ** 2
-    else:
-        power = coefficients ** 2
+    # Use MAGNITUDE (not power!) - key insight from scaleogram
+    values = np.abs(coefficients)
     
-    # Time axis
+    # Time axis - construct xmesh with n_samples+1 elements
     n_samples = coefficients.shape[1]
-    t = np.arange(n_samples) / sampling_rate
+    n_scales = coefficients.shape[0]
+    dt = 1.0 / sampling_rate
+    time = np.arange(n_samples) / sampling_rate
+    xmesh = np.concatenate([time, [time[-1] + dt]])
     
-    # Y-axis (frequencies or scales)
+    # Y-axis setup
     if show_frequencies and frequencies is not None:
         y = frequencies
         ylabel = "Frequency (Hz)"
+        # Auto-set log scale for frequencies
+        if yscale is None:
+            yscale = 'log'
     elif scales is not None:
         y = scales
         ylabel = "Scale"
     else:
-        y = np.arange(coefficients.shape[0])
+        y = np.arange(n_scales, dtype=float)
         ylabel = "Scale Index"
     
-    # Plot
-    if log_scale:
-        norm = LogNorm(vmin=power[power > 0].min(), vmax=power.max())
-        im = ax.pcolormesh(t, y, power, cmap=cmap, norm=norm, shading='auto')
+    # Construct ymesh with one extra element
+    # This is the scaleogram approach - simple concatenation with one step
+    if len(y) > 1:
+        dy = y[-1] - y[-2] if len(y) > 1 else 1.0
+        ymesh = np.concatenate([y, [y[-1] + dy]])
     else:
-        im = ax.pcolormesh(t, y, power, cmap=cmap, shading='auto')
+        ymesh = np.array([y[0], y[0] + 1])
     
+    # Set ylim defaults - scaleogram shows high values at top
+    if ylim is None:
+        ylim = [ymesh[-1], ymesh[0]]  # reversed: high at top
+    
+    # Color normalization
+    if log_scale:
+        # Only use positive values for log scale
+        valid_values = values[values > 0]
+        if len(valid_values) > 0:
+            vmin = valid_values.min()
+            vmax = values.max()
+        else:
+            vmin, vmax = 1e-10, 1.0
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+    else:
+        norm = None
+    
+    # Plot using pcolormesh - the scaleogram way
+    qmesh = ax.pcolormesh(xmesh, ymesh, values, cmap=cmap, norm=norm, shading='flat')
+    
+    # Set labels and title
     ax.set_xlabel("Time (s)", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     ax.set_title(title, fontsize=13, fontweight='bold')
     
+    # Set scales
+    if yscale is not None:
+        ax.set_yscale(yscale)
+    
+    # Set limits
+    ax.set_ylim(ylim)
+    
+    # Colorbar
     if colorbar:
-        cbar = plt.colorbar(im, ax=ax, label='Power')
+        cbar_label = 'Magnitude'
+        cbar = plt.colorbar(qmesh, ax=ax, label=cbar_label,
+                           aspect=30, pad=0.03, fraction=0.05)
     
     plt.tight_layout()
     return fig

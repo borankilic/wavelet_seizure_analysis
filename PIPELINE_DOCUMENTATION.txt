@@ -1,0 +1,1005 @@
+================================================================================
+          EEG EPILEPSY CLASSIFICATION PIPELINE - TECHNICAL DOCUMENTATION
+================================================================================
+
+                              EE473 Project
+                     Digital Signal Processing and Machine Learning
+                          for Epileptic Seizure Detection
+
+================================================================================
+                              TABLE OF CONTENTS
+================================================================================
+
+1. Introduction and Overview
+2. Dataset Description
+3. Signal Preprocessing and Normalization
+4. Wavelet Transform Theory
+   4.1 Filter Banks and Quadrature Mirror Filters (QMF)
+   4.2 Discrete Wavelet Transform (DWT) - Mallat's Algorithm
+   4.3 Continuous Wavelet Transform (CWT)
+5. Frequency Band Separation and EEG Brain Waves
+6. Signal Denoising using VisuShrink
+7. Feature Extraction
+8. Classification Methods
+9. Training and Validation: 5-Fold Cross-Validation
+10. Dimensionality Reduction and Visualization
+11. Implementation Summary
+
+================================================================================
+1. INTRODUCTION AND OVERVIEW
+================================================================================
+
+This project implements a complete pipeline for epileptic seizure detection
+from EEG (Electroencephalogram) signals. The pipeline combines advanced
+Digital Signal Processing (DSP) techniques with Machine Learning (ML) methods
+to classify EEG segments as either "Seizure" or "Non-Seizure".
+
+Pipeline Flow:
+    Load Data → Normalize → Denoise (DWT) → Extract Features → Train Classifier
+                                                                     ↓
+                                                      Validate (5-Fold CV)
+                                                                     ↓
+                                                      Visualize (PCA/t-SNE/UMAP)
+
+The core DSP algorithms (DWT, CWT, denoising) are implemented from scratch
+using only NumPy, providing full transparency into the mathematical operations.
+
+
+================================================================================
+2. DATASET DESCRIPTION
+================================================================================
+
+Dataset: UCI Epileptic Seizure Recognition
+Source: https://archive.ics.uci.edu/ml/datasets/Epileptic+Seizure+Recognition
+
+DATASET SPECIFICATIONS:
+-----------------------
+• Total Samples: 11,500 EEG recordings
+• Sampling Rate: 173.61 Hz
+• Signal Length: 178 samples per recording
+• Signal Duration: ~1.02 seconds per recording
+• File Format: CSV with 179 columns (178 signal values + 1 label)
+
+ORIGINAL 5-CLASS LABELS:
+------------------------
+    Class 1: Seizure activity
+    Class 2: EEG recorded from tumor area (eyes open)
+    Class 3: EEG recorded from healthy brain area (eyes open)
+    Class 4: Eyes closed, tumor-free subject
+    Class 5: Eyes open, tumor-free subject
+
+BINARY CLASSIFICATION MAPPING:
+-----------------------------
+For this project, we convert to binary classification:
+    • Seizure (Class 1): 2,300 samples (20%)
+    • Non-Seizure (Classes 2-5): 9,200 samples (80%)
+
+This imbalanced class distribution is typical of medical datasets, where
+pathological cases are less frequent than healthy cases.
+
+DATA LOADING PROCESS:
+--------------------
+1. Read CSV file using pandas
+2. Extract signal columns (X1 to X178)
+3. Extract labels from the 'y' column
+4. Convert to binary labels: y == 1 → Seizure, y ≠ 1 → Non-Seizure
+5. Normalize signals using z-score normalization
+
+NORMALIZATION:
+-------------
+Each signal is independently normalized using z-score:
+
+    x_normalized = (x - μ) / σ
+
+where μ is the signal mean and σ is the standard deviation.
+
+This normalization:
+• Removes DC offset (baseline drift)
+• Standardizes amplitude across recordings
+• Improves classifier performance
+• Makes features from different signals comparable
+
+
+================================================================================
+3. SIGNAL PREPROCESSING AND NORMALIZATION
+================================================================================
+
+Before feature extraction, signals undergo preprocessing:
+
+1. Z-SCORE NORMALIZATION:
+   Each 178-sample signal is normalized independently:
+   
+       x_norm[n] = (x[n] - mean(x)) / std(x)
+   
+   This ensures:
+   • Zero mean (μ = 0)
+   • Unit variance (σ = 1)
+   • Comparable amplitude across recordings
+
+2. TRAIN-TEST SPLIT:
+   Data is split 80/20 with stratified sampling to maintain class proportions:
+   • Training set: 9,200 samples
+   • Test set: 2,300 samples
+   
+   Stratification ensures the class imbalance (20% seizure, 80% non-seizure)
+   is preserved in both sets.
+
+
+================================================================================
+4. WAVELET TRANSFORM THEORY
+================================================================================
+
+Wavelet transforms decompose signals into time-frequency representations,
+providing localized analysis that is ideal for non-stationary signals like EEG.
+
+
+4.1 FILTER BANKS AND QUADRATURE MIRROR FILTERS (QMF)
+----------------------------------------------------
+
+The DWT uses a two-channel filter bank with complementary filters:
+
+DECOMPOSITION FILTERS:
+• h[n] = Low-pass decomposition filter (scaling function)
+• g[n] = High-pass decomposition filter (wavelet function)
+
+RECONSTRUCTION FILTERS:
+• h̃[n] = Low-pass reconstruction filter
+• g̃[n] = High-pass reconstruction filter
+
+QMF RELATIONSHIP:
+The highpass filter is derived from the lowpass using the alternating flip:
+
+    g[n] = (-1)^(n+1) × h[N-1-n]
+
+where N is the filter length. This relationship ensures that:
+• The filters cover the entire frequency spectrum
+• There is no spectral overlap (perfect reconstruction)
+• The filters are orthogonal (energy preservation)
+
+RECONSTRUCTION FILTERS:
+For orthogonal wavelets:
+    h̃[n] = h[N-1-n]  (time-reversed)
+    g̃[n] = g[N-1-n]  (time-reversed)
+
+SUPPORTED WAVELETS:
+The implementation supports many wavelet families via PyWavelets:
+• Haar (db1): Simplest wavelet, 2 coefficients
+• Daubechies (db2-db16): Compact support, good time-frequency localization
+• Symlets (sym2-sym16): Nearly symmetric versions of Daubechies
+• Coiflets (coif2-coif16): More symmetric, slightly longer filters
+• Biorthogonal (bior1.1-bior6.8): Symmetric, not orthogonal
+
+FILTER LENGTH AND DECOMPOSITION LEVEL:
+The maximum decomposition level depends on signal length and filter length:
+
+    max_level = floor(log₂(N / (L - 1)))
+
+where N is signal length and L is filter length. Longer filters (e.g., db8)
+allow fewer decomposition levels than shorter filters (e.g., Haar).
+
+
+4.2 DISCRETE WAVELET TRANSFORM (DWT) - MALLAT'S ALGORITHM
+---------------------------------------------------------
+
+The DWT is implemented using Mallat's pyramid algorithm, a computationally
+efficient approach with O(N) complexity.
+
+SINGLE-LEVEL DECOMPOSITION:
+--------------------------
+Input: Signal x[n] of length N
+
+Step 1: Periodic Convolution
+    • Low-pass: y_lo[n] = Σₖ h[k] × x[(n-k) mod N]
+    • High-pass: y_hi[n] = Σₖ g[k] × x[(n-k) mod N]
+
+Step 2: Phase Alignment
+    Circular shift by L/2 to align filter phase:
+    • y_lo = roll(y_lo, -L/2)
+    • y_hi = roll(y_hi, -L/2)
+
+Step 3: Downsampling by 2
+    • Approximation: cA[m] = y_lo[2m]  (even indices)
+    • Detail: cD[m] = y_hi[2m]
+
+Output: cA (approximation) and cD (detail), each of length N/2
+
+MULTI-LEVEL DECOMPOSITION:
+-------------------------
+The DWT recursively decomposes the approximation coefficients:
+
+Level 1: x[n] → cA₁, cD₁
+Level 2: cA₁ → cA₂, cD₂
+Level 3: cA₂ → cA₃, cD₃
+...
+Level J: cAⱼ₋₁ → cAⱼ, cDⱼ
+
+Final output: [cAⱼ, cDⱼ, cDⱼ₋₁, ..., cD₁]
+
+For a 5-level decomposition of a 178-sample signal:
+• Original: 178 samples
+• Level 1: 89 approx + 89 detail
+• Level 2: 45 approx + 45 detail
+• Level 3: 23 approx + 23 detail
+• Level 4: 12 approx + 12 detail
+• Level 5: 6 approx + 6 detail (if filter permits)
+
+PERIODIC BOUNDARY HANDLING:
+--------------------------
+We use periodic (circular) boundary conditions, which:
+• Assumes signal repeats: x[n+N] = x[n]
+• Preserves signal length after convolution
+• Avoids edge artifacts from zero-padding
+• Matches PyWavelets 'periodization' mode
+
+IMPLEMENTATION DETAILS:
+----------------------
+Periodic convolution formula:
+
+    y[n] = Σₖ₌₀^(M-1) h[k] × x[(n-k) mod N]
+
+where M is filter length and N is signal length.
+
+RECONSTRUCTION (IDWT):
+---------------------
+Inverse DWT reverses the decomposition:
+
+Step 1: Upsampling by 2
+    Insert zeros between samples:
+    • up_cA[2m] = cA[m], up_cA[2m+1] = 0
+    • up_cD[2m] = cD[m], up_cD[2m+1] = 0
+
+Step 2: Periodic Convolution with Reconstruction Filters
+    • rec_A = periodic_convolve(up_cA, h̃)
+    • rec_D = periodic_convolve(up_cD, g̃)
+
+Step 3: Phase Alignment
+    Circular shift by -(L/2 - 1):
+    • rec_A = roll(rec_A, -shift)
+    • rec_D = roll(rec_D, -shift)
+
+Step 4: Summation
+    • x_reconstructed = rec_A + rec_D
+
+PERFECT RECONSTRUCTION:
+For orthogonal wavelets with proper phase alignment:
+    ||x - x_reconstructed||₂ < 10⁻¹⁵
+
+This numerical precision demonstrates that no information is lost in the
+transform-inverse process.
+
+
+4.3 CONTINUOUS WAVELET TRANSFORM (CWT)
+--------------------------------------
+
+The CWT provides a continuous time-frequency representation by correlating
+the signal with scaled and translated versions of a mother wavelet.
+
+MATHEMATICAL DEFINITION:
+-----------------------
+The CWT of signal x(t) with wavelet ψ(t) is:
+
+    W(a,b) = (1/√a) ∫ x(t) × ψ*((t-b)/a) dt
+
+where:
+• a = scale parameter (inversely related to frequency)
+• b = translation parameter (time localization)
+• ψ* = complex conjugate of wavelet
+
+DISCRETE IMPLEMENTATION:
+-----------------------
+For discrete signals, we compute:
+
+    W[a,n] = (1/√a) Σₘ x[m] × ψ*((m-n)/(a×fs))
+
+Using convolution:
+    W[a,:] = convolve(x, ψ_a[::-1].conj())
+
+where ψ_a is the wavelet at scale a.
+
+MORLET WAVELET:
+--------------
+We use the Morlet wavelet, a complex sinusoid modulated by a Gaussian:
+
+    ψ(t) = π^(-1/4) × exp(iω₀t) × exp(-t²/2)
+
+where ω₀ is the central frequency (default: 5.0).
+
+Properties:
+• Complex-valued: provides both amplitude and phase information
+• Good time-frequency localization
+• Adjustable ω₀ controls time-frequency trade-off:
+  - Higher ω₀: better frequency resolution, worse time resolution
+  - Lower ω₀: better time resolution, worse frequency resolution
+
+SCALE-TO-FREQUENCY CONVERSION:
+-----------------------------
+For Morlet wavelet:
+
+    f = ω₀ × fs / (2π × a)
+
+where fs is sampling rate and a is scale.
+
+SCALOGRAM:
+---------
+The scalogram is the magnitude squared of CWT coefficients:
+
+    Scalogram[a,n] = |W[a,n]|²
+
+It visualizes energy distribution across time and frequency, with:
+• X-axis: Time
+• Y-axis: Frequency (or scale)
+• Color: Energy intensity
+
+
+================================================================================
+5. FREQUENCY BAND SEPARATION AND EEG BRAIN WAVES
+================================================================================
+
+EEG signals contain characteristic frequency bands associated with different
+brain states. The DWT naturally separates these bands through its multi-scale
+decomposition.
+
+STANDARD EEG FREQUENCY BANDS:
+----------------------------
+    Band     Frequency (Hz)    Brain State
+    ─────────────────────────────────────────────
+    Delta    0.5 - 4           Deep sleep, unconsciousness
+    Theta    4 - 8             Drowsiness, meditation, memory
+    Alpha    8 - 13            Relaxed, eyes closed
+    Beta     13 - 30           Active thinking, alertness
+    Gamma    30 - 100          Cognitive processing, perception
+
+DWT LEVEL TO FREQUENCY MAPPING:
+------------------------------
+At 173.61 Hz sampling rate with 5-level decomposition:
+
+    Level    Coefficients    Frequency Range (Hz)    Brain Wave
+    ─────────────────────────────────────────────────────────────
+    A5       Approximation   0 - 2.7                 Sub-Delta
+    D5       Detail 5        2.7 - 5.4               Delta/Theta
+    D4       Detail 4        5.4 - 10.8              Theta/Alpha
+    D3       Detail 3        10.8 - 21.7             Alpha/Beta
+    D2       Detail 2        21.7 - 43.4             Beta/Gamma
+    D1       Detail 1        43.4 - 86.8             High Gamma/Noise
+
+FREQUENCY CALCULATION:
+The frequency range at level j for sampling rate fs:
+
+    Low frequency:  fs / 2^(j+1)
+    High frequency: fs / 2^j
+
+For 173.61 Hz:
+    Level 1 (D1): 86.8 - 173.6 Hz → High-frequency noise
+    Level 2 (D2): 43.4 - 86.8 Hz  → Gamma band
+    Level 3 (D3): 21.7 - 43.4 Hz  → Beta band
+    Level 4 (D4): 10.8 - 21.7 Hz  → Alpha band
+    Level 5 (D5): 5.4 - 10.8 Hz   → Theta band
+    Level 5 (A5): 0 - 5.4 Hz      → Delta band
+
+SIGNIFICANCE FOR SEIZURE DETECTION:
+-----------------------------------
+During epileptic seizures, characteristic changes occur in brain wave patterns:
+
+• Increased Delta activity: Excessive slow-wave activity
+• Theta/Alpha ratio changes: Disrupted normal rhythm
+• High-frequency oscillations: Spike-and-wave patterns
+• Energy redistribution: Abnormal power distribution across bands
+
+The DWT captures these changes by computing separate features for each
+frequency band, allowing classifiers to identify seizure-specific patterns.
+
+
+================================================================================
+6. SIGNAL DENOISING USING VISUSHRINK
+================================================================================
+
+EEG signals are contaminated by various noise sources:
+• Electrode artifacts
+• Muscle activity (EMG)
+• Eye movements (EOG)
+• Power line interference (50/60 Hz)
+• Amplifier noise
+
+We use wavelet-based denoising with the VisuShrink method, which provides
+near-optimal noise reduction for Gaussian white noise.
+
+DENOISING ALGORITHM:
+-------------------
+
+Step 1: WAVELET DECOMPOSITION
+    Decompose signal using DWT:
+    coeffs = [cA_J, cD_J, cD_{J-1}, ..., cD_1]
+
+Step 2: NOISE ESTIMATION (Robust MAD Estimator)
+    Estimate noise standard deviation from finest detail coefficients:
+    
+        σ̂ = median(|cD_1|) / 0.6745
+    
+    The constant 0.6745 is the expected value of median(|Z|) for Z ~ N(0,1).
+    
+    Why use finest level (cD_1)?
+    • High-frequency noise dominates finest details
+    • Signal content is minimal at highest frequencies
+    • Provides robust noise estimate unaffected by signal
+    
+    Why use MAD instead of standard deviation?
+    • Robust to outliers (spike artifacts)
+    • Not affected by signal content in coefficients
+    • Breakdown point of 50% (vs 0% for std)
+
+Step 3: THRESHOLD CALCULATION (Universal/VisuShrink)
+    Universal threshold (Donoho & Johnstone, 1994):
+    
+        λ = σ̂ × √(2 × log(N))
+    
+    where N is signal length.
+    
+    Theoretical motivation:
+    • For N i.i.d. samples from N(0,σ²), the maximum follows:
+      E[max|Zᵢ|] ≈ σ√(2 log N)
+    • Threshold removes all pure-noise coefficients with high probability
+    • Near-minimax optimality for smooth signals
+    
+    For N = 178:
+        λ ≈ σ̂ × √(2 × log(178)) ≈ σ̂ × 3.23
+
+Step 4: COEFFICIENT THRESHOLDING
+    Apply thresholding to DETAIL coefficients only:
+    
+    SOFT THRESHOLDING (default):
+        η_soft(x, λ) = sign(x) × max(|x| - λ, 0)
+    
+    Properties:
+    • Shrinks large coefficients toward zero by λ
+    • Continuous function (no discontinuity)
+    • Reduces amplitude bias
+    • Preferred for smooth signal estimation
+    
+    HARD THRESHOLDING:
+        η_hard(x, λ) = x × 1(|x| > λ)
+    
+    Properties:
+    • Keeps large coefficients unchanged
+    • Introduces discontinuity at ±λ
+    • Better for signals with sharp edges
+    • May introduce pseudo-Gibbs phenomena
+    
+    IMPORTANT: Approximation coefficients (cA_J) are NOT thresholded!
+    • They contain low-frequency signal content
+    • Noise is minimal in approximation
+    • Preserving them maintains signal baseline
+
+Step 5: SIGNAL RECONSTRUCTION
+    Reconstruct denoised signal using IDWT:
+    
+        x_denoised = IDWT([cA_J, η(cD_J), η(cD_{J-1}), ..., η(cD_1)])
+
+MATHEMATICAL JUSTIFICATION:
+--------------------------
+For a signal model: y = x + ε where ε ~ N(0, σ²)
+
+VisuShrink provides near-minimax denoising:
+    E[||x̂ - x||²] ≤ (2 log N + 1)(σ² + Σⱼ min(θⱼ², σ²))
+
+where θⱼ are the true signal wavelet coefficients.
+
+This bound shows that:
+• Large coefficients (|θⱼ| >> σ) are preserved
+• Small coefficients (|θⱼ| << σ) are removed
+• The penalty is at most (2 log N + 1) times optimal
+
+
+================================================================================
+7. FEATURE EXTRACTION
+================================================================================
+
+After denoising, we extract statistical features from DWT coefficients.
+Each coefficient array represents a specific frequency band, and features
+characterize the signal's behavior in that band.
+
+FEATURE SETS:
+------------
+
+STANDARD FEATURES (per band): 3 features × 6 bands = 18 features
+    1. Normalized Energy
+    2. Shannon Entropy
+    3. Standard Deviation
+
+FULL FEATURES (per band): 7 features × 6 bands = 42 features
+    1. Normalized Energy
+    2. Shannon Entropy
+    3. Standard Deviation
+    4. Mean
+    5. Skewness
+    6. Kurtosis
+    7. Root Mean Square (RMS)
+
+MINIMAL FEATURES (per band): 2 features × 6 bands = 12 features
+    1. Normalized Energy
+    2. Shannon Entropy
+
+
+DETAILED FEATURE DESCRIPTIONS:
+-----------------------------
+
+1. ENERGY (Normalized):
+   Measures signal power in each frequency band.
+   
+       E_band = Σₙ |cD[n]|² / E_total
+   
+   where E_total = Σ_all_bands E_band
+   
+   Significance:
+   • Seizures typically show energy redistribution across bands
+   • Increased low-frequency energy (delta) during seizures
+   • Relative energy more robust than absolute energy
+
+2. SHANNON ENTROPY:
+   Measures uncertainty/complexity of coefficient distribution.
+   
+       H = -Σₙ p[n] × log₂(p[n])
+   
+   where p[n] = |cD[n]|² / Σₘ |cD[m]|²
+   
+   Significance:
+   • High entropy: complex, irregular patterns
+   • Low entropy: concentrated, regular patterns
+   • Seizures often show characteristic entropy changes
+
+3. STANDARD DEVIATION:
+   Measures coefficient variability.
+   
+       σ = √(Σₙ (cD[n] - μ)² / N)
+   
+   Significance:
+   • Higher std indicates more variability in that frequency band
+   • Seizures often show increased variability
+
+4. MEAN:
+   Average coefficient value (usually near zero for details).
+   
+       μ = Σₙ cD[n] / N
+
+5. SKEWNESS:
+   Measures asymmetry of coefficient distribution.
+   
+       γ₁ = E[(X - μ)³] / σ³
+   
+   • Positive: right-tailed distribution
+   • Negative: left-tailed distribution
+   • Zero: symmetric distribution
+
+6. KURTOSIS (Excess):
+   Measures "tailedness" of distribution.
+   
+       γ₂ = E[(X - μ)⁴] / σ⁴ - 3
+   
+   • Positive: heavy tails (more outliers)
+   • Negative: light tails
+   • Zero: Gaussian-like
+
+7. ROOT MEAN SQUARE (RMS):
+   Amplitude measure.
+   
+       RMS = √(Σₙ cD[n]² / N)
+
+FEATURE NAMING CONVENTION:
+-------------------------
+Features are named as: {Band}_{Statistic}
+
+Examples:
+    A5_energy    - Energy in approximation (level 5)
+    D5_entropy   - Entropy of detail 5 coefficients
+    D4_std       - Standard deviation of detail 4
+    D3_energy    - Energy in detail 3 (Beta band)
+    D2_entropy   - Entropy of detail 2 (Gamma band)
+    D1_std       - Standard deviation of detail 1 (High-freq)
+
+
+================================================================================
+8. CLASSIFICATION METHODS
+================================================================================
+
+We implement four classification algorithms, each with distinct strengths:
+
+
+8.1 SUPPORT VECTOR MACHINE (SVM)
+--------------------------------
+
+SVM finds the optimal hyperplane that maximizes the margin between classes.
+
+MATHEMATICAL FORMULATION:
+Minimize: ½||w||² + C Σᵢ ξᵢ
+Subject to: yᵢ(w·xᵢ + b) ≥ 1 - ξᵢ
+
+where:
+• w: hyperplane normal vector
+• b: bias term
+• C: regularization parameter (controls margin vs. misclassification trade-off)
+• ξᵢ: slack variables for soft margin
+
+KERNEL TRICK (RBF):
+For non-linearly separable data, we use the RBF (Gaussian) kernel:
+
+    K(xᵢ, xⱼ) = exp(-γ||xᵢ - xⱼ||²)
+
+This implicitly maps data to infinite-dimensional space where linear
+separation is possible.
+
+PARAMETERS:
+• C = 1.0 (regularization strength)
+• kernel = 'rbf' (radial basis function)
+• gamma = 'scale' (1 / (n_features × X.var()))
+
+STRENGTHS:
+• Effective in high-dimensional spaces
+• Memory efficient (uses support vectors)
+• Works well with clear margins
+• Probability estimates available
+
+
+8.2 XGBOOST (Extreme Gradient Boosting)
+---------------------------------------
+
+XGBoost is an ensemble of decision trees trained sequentially, where each
+tree corrects errors of previous trees.
+
+ALGORITHM:
+1. Initialize predictions: ŷ⁽⁰⁾ = 0
+2. For m = 1 to M:
+   a. Compute residuals: rᵢ = yᵢ - ŷᵢ⁽ᵐ⁻¹⁾
+   b. Fit tree Tₘ to residuals
+   c. Update: ŷ⁽ᵐ⁾ = ŷ⁽ᵐ⁻¹⁾ + η × Tₘ
+3. Final prediction: ŷ = Σₘ η × Tₘ
+
+OBJECTIVE FUNCTION:
+L(θ) = Σᵢ l(yᵢ, ŷᵢ) + Σₘ Ω(Tₘ)
+
+where:
+• l: loss function (log loss for classification)
+• Ω: regularization term (tree complexity)
+
+PARAMETERS:
+• n_estimators = 100 (number of trees)
+• max_depth = 6 (maximum tree depth)
+• learning_rate = 0.1 (shrinkage parameter η)
+
+STRENGTHS:
+• Handles non-linear relationships
+• Built-in regularization prevents overfitting
+• Feature importance available
+• Fast training with parallelization
+
+
+8.3 RANDOM FOREST
+-----------------
+
+Random Forest is an ensemble of decision trees trained on bootstrap samples
+with random feature subsets.
+
+ALGORITHM:
+1. For b = 1 to B:
+   a. Draw bootstrap sample from training data
+   b. Grow tree Tᵦ using random subset of features at each split
+   c. No pruning
+2. Predict by majority vote: ŷ = mode{Tᵦ(x)}
+
+RANDOMIZATION:
+• Bootstrap sampling: each tree sees ~63% of data
+• Random feature subset: √(n_features) considered at each split
+
+PARAMETERS:
+• n_estimators = 100 (number of trees)
+• max_depth = None (unlimited depth)
+• min_samples_split = 2
+• min_samples_leaf = 1
+
+STRENGTHS:
+• Robust to outliers and noise
+• Handles high dimensionality well
+• Provides feature importance
+• Rarely overfits (due to averaging)
+
+
+8.4 GAUSSIAN NAIVE BAYES
+------------------------
+
+Naive Bayes assumes feature independence and models each class with
+a Gaussian distribution.
+
+BAYES' THEOREM:
+P(y|x) = P(x|y) × P(y) / P(x)
+
+NAIVE ASSUMPTION:
+P(x|y) = ∏ⱼ P(xⱼ|y)
+
+GAUSSIAN MODEL:
+P(xⱼ|y=k) = (1/√(2πσ²ₖⱼ)) × exp(-(xⱼ - μₖⱼ)² / (2σ²ₖⱼ))
+
+PREDICTION:
+ŷ = argmax_k [log P(y=k) + Σⱼ log P(xⱼ|y=k)]
+
+PARAMETERS:
+• var_smoothing = 1e-9 (variance smoothing for numerical stability)
+
+STRENGTHS:
+• Very fast training and prediction
+• Works well with small datasets
+• Probabilistic interpretation
+• Good baseline model
+
+
+================================================================================
+9. TRAINING AND VALIDATION: 5-FOLD CROSS-VALIDATION
+================================================================================
+
+To obtain robust performance estimates, we use stratified 5-fold cross-
+validation after the initial train-test split.
+
+PROCEDURE:
+---------
+
+Step 1: INITIAL SPLIT
+    Full data → 80% Training, 20% Test (held out)
+    Stratified to maintain class proportions
+
+Step 2: TRAIN ON TRAINING SET
+    Train classifier on 80% training data
+    Evaluate on 20% test data → "Test Metrics"
+
+Step 3: CROSS-VALIDATION (on combined data)
+    Combine training and test sets
+    Perform 5-fold stratified cross-validation:
+    
+    Fold 1: Train on folds 2-5, validate on fold 1
+    Fold 2: Train on folds 1,3-5, validate on fold 2
+    Fold 3: Train on folds 1-2,4-5, validate on fold 3
+    Fold 4: Train on folds 1-3,5, validate on fold 4
+    Fold 5: Train on folds 1-4, validate on fold 5
+
+STRATIFIED SAMPLING:
+-------------------
+Each fold maintains the original class distribution:
+    • ~20% Seizure samples
+    • ~80% Non-Seizure samples
+
+This ensures:
+    • Each fold is representative of the full dataset
+    • Model sees balanced exposure to both classes
+    • Performance estimates are not biased by fold composition
+
+METRICS COMPUTED:
+----------------
+For each fold, we compute:
+
+1. ACCURACY:
+       Accuracy = (TP + TN) / (TP + TN + FP + FN)
+   
+   Proportion of correct predictions.
+
+2. PRECISION:
+       Precision = TP / (TP + FP)
+   
+   Of predicted seizures, how many are actual seizures?
+   High precision → few false alarms.
+
+3. RECALL (Sensitivity):
+       Recall = TP / (TP + FN)
+   
+   Of actual seizures, how many did we detect?
+   High recall → few missed seizures (critical for medical applications).
+
+4. F1 SCORE:
+       F1 = 2 × (Precision × Recall) / (Precision + Recall)
+   
+   Harmonic mean of precision and recall.
+   Balances both metrics.
+
+5. ROC-AUC (Area Under Receiver Operating Characteristic):
+       AUC = ∫₀¹ TPR(FPR) dFPR
+   
+   Measures discrimination ability across all thresholds.
+   • AUC = 1.0: perfect classifier
+   • AUC = 0.5: random guessing
+
+CROSS-VALIDATION OUTPUT:
+-----------------------
+For each metric, we report:
+    • Mean across 5 folds
+    • Standard deviation across 5 folds
+
+Example output:
+    Accuracy:  0.9652 ± 0.0034
+    Precision: 0.9123 ± 0.0156
+    Recall:    0.9478 ± 0.0089
+    F1 Score:  0.9297 ± 0.0078
+    ROC-AUC:   0.9912 ± 0.0021
+
+The standard deviation indicates model stability:
+    • Small std → consistent performance across folds
+    • Large std → performance varies with training data
+
+WHY 5-FOLD CV?
+-------------
+• Standard choice balancing bias-variance trade-off
+• Each sample is used for validation exactly once
+• 80% training data per fold (sufficient for learning)
+• 5 independent estimates for statistical confidence
+• Computationally feasible for larger datasets
+
+
+================================================================================
+10. DIMENSIONALITY REDUCTION AND VISUALIZATION
+================================================================================
+
+With 18-42 features per sample, direct visualization is impossible.
+Dimensionality reduction projects high-dimensional data to 2D/3D for
+visualization, revealing cluster structure.
+
+IMPORTANT NOTE:
+We use dimensionality reduction for VISUALIZATION ONLY.
+Classification is performed on the FULL feature space to preserve all
+discriminative information.
+
+
+10.1 PRINCIPAL COMPONENT ANALYSIS (PCA)
+---------------------------------------
+
+PCA finds orthogonal directions of maximum variance.
+
+ALGORITHM:
+1. Center data: X_centered = X - mean(X)
+2. Compute covariance: C = X_centered.T @ X_centered / (n-1)
+3. Eigendecomposition: C = V × Λ × V.T
+4. Project: X_pca = X_centered @ V[:, :k]
+
+PROPERTIES:
+• Linear transformation
+• Preserves global structure
+• Maximizes variance in each component
+• Components are orthogonal and uncorrelated
+
+EXPLAINED VARIANCE:
+Each component explains a portion of total variance:
+    var_ratio_j = λⱼ / Σₖ λₖ
+
+Typically, first 2 components explain 50-70% of variance for EEG features.
+
+USE CASE:
+• Fast computation
+• Interpretable components
+• Good for linearly separable data
+• Feature importance via loadings
+
+
+10.2 t-DISTRIBUTED STOCHASTIC NEIGHBOR EMBEDDING (t-SNE)
+--------------------------------------------------------
+
+t-SNE preserves local neighborhood structure using probabilistic embeddings.
+
+ALGORITHM:
+1. Compute pairwise similarities in high-D (Gaussian kernel):
+       pⱼ|ᵢ = exp(-||xᵢ - xⱼ||² / 2σᵢ²) / Σₖ≠ᵢ exp(-||xᵢ - xₖ||² / 2σᵢ²)
+       pᵢⱼ = (pⱼ|ᵢ + pᵢ|ⱼ) / 2n
+
+2. Compute similarities in low-D (Student-t with 1 df):
+       qᵢⱼ = (1 + ||yᵢ - yⱼ||²)⁻¹ / Σₖ≠ₗ (1 + ||yₖ - yₗ||²)⁻¹
+
+3. Minimize KL divergence: KL(P||Q) = Σᵢⱼ pᵢⱼ log(pᵢⱼ/qᵢⱼ)
+
+PARAMETERS:
+• perplexity = 30 (effective number of neighbors)
+• max_iter = 1000 (optimization iterations)
+• learning_rate = 'auto'
+
+PROPERTIES:
+• Non-linear transformation
+• Preserves local neighborhoods
+• Reveals cluster structure
+• Not suitable for new data projection
+
+USE CASE:
+• Discovering clusters
+• Visualizing complex manifolds
+• Exploring class separability
+
+
+10.3 UNIFORM MANIFOLD APPROXIMATION AND PROJECTION (UMAP)
+----------------------------------------------------------
+
+UMAP constructs a topological representation and optimizes a low-dimensional
+embedding to preserve manifold structure.
+
+ALGORITHM (simplified):
+1. Build weighted k-nearest neighbor graph
+2. Construct fuzzy topological representation
+3. Find low-D embedding that preserves topology
+4. Minimize cross-entropy between representations
+
+PARAMETERS:
+• n_neighbors = 15 (local neighborhood size)
+• min_dist = 0.1 (minimum distance between points)
+• metric = 'euclidean'
+
+PROPERTIES:
+• Non-linear transformation
+• Preserves both local AND global structure
+• Faster than t-SNE for large datasets
+• Can project new data
+
+USE CASE:
+• Large dataset visualization
+• Preserving global relationships
+• When t-SNE is too slow
+
+
+VISUALIZATION INSIGHTS:
+----------------------
+Good visualization shows:
+    • Clear cluster separation between Seizure and Non-Seizure
+    • Compact clusters (low intra-class variance)
+    • Well-defined decision boundaries
+
+Common patterns:
+    • PCA: Overlapping but separable classes (linear view)
+    • t-SNE: Distinct clusters with complex boundaries
+    • UMAP: Similar to t-SNE but with better global structure
+
+
+================================================================================
+11. IMPLEMENTATION SUMMARY
+================================================================================
+
+PIPELINE OVERVIEW:
+-----------------
+1. Load UCI dataset → 11,500 EEG samples (178 samples each, 173.61 Hz)
+2. Convert to binary: Seizure (class 1) vs Non-Seizure (classes 2-5)
+3. Z-score normalize each signal
+4. Split: 80% train, 20% test (stratified)
+5. Denoise using DWT + VisuShrink (soft thresholding)
+6. Extract DWT features: energy, entropy, std from each frequency band
+7. Train classifier (SVM/XGBoost/RandomForest/NaiveBayes)
+8. Validate using 5-fold stratified cross-validation
+9. Visualize using PCA/t-SNE/UMAP (for interpretation only)
+
+KEY DSP COMPONENTS:
+------------------
+• Mallat's Algorithm for DWT/IDWT with O(N) complexity
+• Periodic boundary conditions (circular convolution)
+• QMF filter banks with perfect reconstruction
+• Morlet wavelet for CWT scalograms
+• MAD-based noise estimation
+• Universal threshold (VisuShrink)
+
+KEY ML COMPONENTS:
+-----------------
+• Stratified train-test split
+• Multiple classifiers with consistent API
+• 5-fold stratified cross-validation
+• Comprehensive metrics (accuracy, precision, recall, F1, AUC)
+• Feature importance analysis
+
+PERFORMANCE CHARACTERISTICS:
+---------------------------
+• DWT complexity: O(N) per decomposition
+• CWT complexity: O(N × S) where S is number of scales
+• Feature extraction: O(N × L) where L is decomposition level
+• SVM training: O(N² × F) to O(N³ × F) where F is features
+• Random Forest: O(N × F × T × log N) where T is trees
+• XGBoost: O(N × F × T) with optimizations
+
+TYPICAL RESULTS:
+---------------
+Depending on wavelet and classifier choice:
+• Accuracy: 92-98%
+• F1 Score: 85-95%
+• ROC-AUC: 0.95-0.99
+
+Best performance typically achieved with:
+• Wavelets: db4, db6, sym4, coif4
+• Classifiers: SVM (RBF kernel), XGBoost
+
+================================================================================
+                              END OF DOCUMENTATION
+================================================================================
+
