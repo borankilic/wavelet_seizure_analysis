@@ -147,5 +147,5 @@ PyWavelets>=1.1.0 (for filter coefficients)
 
 ## Author
 
-EE473 Project - BOUN 2025-2026 Fall
+Boran Aybak Kilic
 
