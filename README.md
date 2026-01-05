@@ -2,6 +2,8 @@
 
 A modular Python-based DSP and Machine Learning pipeline for epileptic seizure detection using custom wavelet transform implementations.
 
+![figure_main](figures/sample_seizure_vs_non.png)
+
 ## Project Structure
 
 ```
@@ -79,7 +81,7 @@ EE473_project/
 - `hard_threshold()`: Hard thresholding
 - `estimate_noise_std()`: MAD estimator
 - `denoise_signal()`: Complete denoising pipeline
-
+![denoising_figure](figures/denoising_comparison.png)
 ## Visualization Module Organization
 
 ### `signal_plots.py`
